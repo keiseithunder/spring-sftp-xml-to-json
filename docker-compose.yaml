@@ -1,0 +1,14 @@
+version: '3.9'
+services:
+  sftp:
+    image: atmoz/sftp
+    volumes:
+        - ./upload:/home/spring/upload
+    ports:
+        - "2222:22"
+    command: spring:password:::upload
+    networks:
+      - sftp_network
+networks:
+  sftp_network:
+    driver: bridge
