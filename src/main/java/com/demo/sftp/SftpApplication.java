@@ -40,6 +40,7 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.messaging.MessageHandler;
@@ -112,11 +113,19 @@ public class SftpApplication {
   }
 
   @Bean
-  @ServiceActivator(inputChannel = "toKafka")
+  @Transformer(inputChannel = "toKafka", outputChannel = "toKafka2")
+  public HeaderEnricher headerEnricher() {
+    Map<String, HeaderValueMessageProcessor<?>> headersToAdd = new HashMap<>();
+    Expression ex = new SpelExpressionParser().parseExpression("headers['file_remoteFile']");
+    headersToAdd.put(KafkaHeaders.MESSAGE_KEY, new ExpressionEvaluatingHeaderValueMessageProcessor<>(ex, String.class));
+    return new HeaderEnricher(headersToAdd);
+  }
+
+  @Bean
+  @ServiceActivator(inputChannel = "toKafka2")
   public MessageHandler handlerKafka() throws Exception {
     KafkaProducerMessageHandler<String, String> handler = new KafkaProducerMessageHandler<>(kafkaTemplate());
     handler.setTopicExpression(new LiteralExpression("test"));
-    handler.setMessageKeyExpression(new LiteralExpression("headers[file_remoteFile]"));
     handler.setSendSuccessChannelName("success");
     // handler.setSendFailureChannelName("failure");
     return handler;
@@ -141,7 +150,7 @@ public class SftpApplication {
 
   @Bean
   @ServiceActivator(inputChannel = "success", adviceChain = "after")
-  public MessageHandler handle() throws JsonMappingException, JsonProcessingException {
+  public MessageHandler handle() {
     return System.out::println;
   }
 
@@ -153,5 +162,7 @@ public class SftpApplication {
     advice.setPropagateEvaluationFailures(true);
     return advice;
   }
+
+
 
 }
