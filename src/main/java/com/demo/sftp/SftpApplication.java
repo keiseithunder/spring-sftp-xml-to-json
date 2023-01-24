@@ -1,13 +1,23 @@
 package com.demo.sftp;
 
 import java.io.InputStream;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.sshd.sftp.client.SftpClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.expression.Expression;
+import org.springframework.expression.common.LiteralExpression;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.integration.annotation.Filter;
 import org.springframework.integration.annotation.InboundChannelAdapter;
+import org.springframework.integration.annotation.Poller;
 import org.springframework.integration.annotation.ServiceActivator;
 import org.springframework.integration.annotation.Transformer;
 import org.springframework.integration.core.MessageSource;
@@ -15,17 +25,32 @@ import org.springframework.integration.file.filters.AcceptAllFileListFilter;
 import org.springframework.integration.file.remote.session.CachingSessionFactory;
 import org.springframework.integration.file.remote.session.SessionFactory;
 import org.springframework.integration.handler.advice.ExpressionEvaluatingRequestHandlerAdvice;
+import org.springframework.integration.kafka.outbound.KafkaProducerMessageHandler;
+import org.springframework.integration.sftp.gateway.SftpOutboundGateway;
 import org.springframework.integration.sftp.inbound.SftpStreamingMessageSource;
 import org.springframework.integration.sftp.session.DefaultSftpSessionFactory;
 import org.springframework.integration.sftp.session.SftpRemoteFileTemplate;
+import org.springframework.integration.transformer.HeaderEnricher;
 import org.springframework.integration.transformer.StreamTransformer;
+import org.springframework.integration.transformer.support.ExpressionEvaluatingHeaderValueMessageProcessor;
+import org.springframework.integration.transformer.support.HeaderValueMessageProcessor;
+import org.springframework.integration.transformer.support.StaticHeaderValueMessageProcessor;
 import org.springframework.integration.xml.transformer.UnmarshallingTransformer;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.messaging.MessageHandler;
+import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.oxm.jaxb.Jaxb2Marshaller;
 
 import com.demo.sftp.models.Note;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @SpringBootApplication
 public class SftpApplication {
@@ -56,44 +81,13 @@ public class SftpApplication {
     return new CachingSessionFactory<>(factory);
   }
 
-  // @Bean
-  // public SftpInboundFileSynchronizer sftpInboundFileSynchronizer() {
-  // SftpInboundFileSynchronizer fileSynchronizer = new
-  // SftpInboundFileSynchronizer(sftpSessionFactory());
-  // fileSynchronizer.setDeleteRemoteFiles(false);
-  // fileSynchronizer.setRemoteDirectory(remoteDir);
-  // fileSynchronizer.setFilter(new SftpSimplePatternFileListFilter("*.xml"));
-  // return fileSynchronizer;
-  // }
-
-  // @Bean
-  // @InboundChannelAdapter(channel = "sftpChannel", poller = @Poller(fixedDelay =
-  // "5000"))
-  // public MessageSource<File> sftpMessageSource() {
-  // SftpInboundFileSynchronizingMessageSource source =
-  // new SftpInboundFileSynchronizingMessageSource(sftpInboundFileSynchronizer());
-  // source.setLocalDirectory(new File("sftp-inbound"));
-  // source.setAutoCreateLocalDirectory(true);
-  // source.setLocalFilter(new AcceptOnceFileListFilter<File>());
-  // source.setMaxFetchSize(1);
-  // return source;
-  // }
-
-  // @Bean
-  // @ServiceActivator(inputChannel = "sftpChannel")
-  // public MessageHandler handler() {
-  // return new MessageHandler() {
-
-  // @Override
-  // public void handleMessage(Message<?> message) throws MessagingException {
-  // System.out.println(message.getPayload());
-  // }
-
-  // };
-  // }
+  @Bean
+  public SftpRemoteFileTemplate template() {
+    return new SftpRemoteFileTemplate(sftpSessionFactory());
+  }
 
   @Bean
-  @InboundChannelAdapter(channel = "stream")
+  @InboundChannelAdapter(channel = "stream", poller =  @Poller(fixedDelay = "10000"))
   public MessageSource<InputStream> ftpMessageSource() {
     SftpStreamingMessageSource messageSource = new SftpStreamingMessageSource(template());
     messageSource.setRemoteDirectory(remoteDir);
@@ -109,7 +103,7 @@ public class SftpApplication {
   }
 
   @Bean
-  @Transformer(inputChannel = "rawdata", outputChannel = "data")
+  @Transformer(inputChannel = "rawdata", outputChannel = "toKafka")
   public UnmarshallingTransformer marshallingTransformer() {
     Jaxb2Marshaller jaxb2Marshaller = new Jaxb2Marshaller();
     jaxb2Marshaller.setClassesToBeBound(Note.class);
@@ -118,15 +112,36 @@ public class SftpApplication {
   }
 
   @Bean
-  public SftpRemoteFileTemplate template() {
-    return new SftpRemoteFileTemplate(sftpSessionFactory());
+  @ServiceActivator(inputChannel = "toKafka")
+  public MessageHandler handlerKafka() throws Exception {
+    KafkaProducerMessageHandler<String, String> handler = new KafkaProducerMessageHandler<>(kafkaTemplate());
+    handler.setTopicExpression(new LiteralExpression("test"));
+    handler.setMessageKeyExpression(new LiteralExpression("headers[file_remoteFile]"));
+    handler.setSendSuccessChannelName("success");
+    // handler.setSendFailureChannelName("failure");
+    return handler;
   }
 
-  @ServiceActivator(inputChannel = "data", adviceChain = "after")
   @Bean
+  public KafkaTemplate<String, String> kafkaTemplate() {
+    return new KafkaTemplate<>(producerFactory());
+  }
+
+  @Bean
+  public ProducerFactory<String, String> producerFactory() {
+    Map<String, Object> props = new HashMap<>();
+    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
+    JsonSerializer jsonSerde = new JsonSerializer<>();
+    return new DefaultKafkaProducerFactory<>(props, null, jsonSerde.copyWithType(Note.class));
+  }
+
+
+
+  @Bean
+  @ServiceActivator(inputChannel = "success", adviceChain = "after")
   public MessageHandler handle() throws JsonMappingException, JsonProcessingException {
-    // Note note = xmlMapper.readValue(<>, Note.class);
-    // System.out.println(note);
     return System.out::println;
   }
 
