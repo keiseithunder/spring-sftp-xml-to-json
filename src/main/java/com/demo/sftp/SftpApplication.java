@@ -134,6 +134,23 @@ public class SftpApplication {
   }
 
   @Bean
+  @Order(Ordered.LOWEST_PRECEDENCE)
+  @ServiceActivator(inputChannel = "errorChannel")
+  public MessageHandler moveFileToError() {
+    SftpOutboundGateway sftpOutboundGateway = new SftpOutboundGateway(sftpSessionFactory(), Command.MV.getCommand(),
+        "headers['file_remoteDirectory'] + '/' + headers['file_remoteFile']");
+    sftpOutboundGateway
+        .setRenameExpressionString("headers['file_remoteDirectory'] + '/error/' +headers['timestamp'] + '-' + headers['file_remoteFile']");
+        sftpOutboundGateway.setLoggingEnabled(true);
+    sftpOutboundGateway.setRequiresReply(false);
+    sftpOutboundGateway.setUseTemporaryFileName(true);
+    sftpOutboundGateway.setOutputChannelName("nullChannel");
+    sftpOutboundGateway.setOrder(Ordered.LOWEST_PRECEDENCE);
+    sftpOutboundGateway.setAsync(true);
+    return sftpOutboundGateway;
+  }
+
+  @Bean
   @Transformer(inputChannel = "rawdata", outputChannel = "toKafka")
   public UnmarshallingTransformer marshallingTransformer() {
     Jaxb2Marshaller jaxb2Marshaller = new Jaxb2Marshaller();
