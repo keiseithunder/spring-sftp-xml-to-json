@@ -175,6 +175,12 @@ public class SftpApplication {
   }
 
   @Bean
+  @ServiceActivator(inputChannel = "success")
+  public MessageHandler successHandler() {
+    return System.out::println;
+  }
+
+  @Bean
   public KafkaTemplate<String, String> kafkaTemplate() {
     return new KafkaTemplate<>(producerFactory());
   }
