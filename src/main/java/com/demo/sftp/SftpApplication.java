@@ -17,50 +17,39 @@ import org.springframework.core.annotation.Order;
 import org.springframework.expression.Expression;
 import org.springframework.expression.common.LiteralExpression;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.integration.annotation.Filter;
 import org.springframework.integration.annotation.InboundChannelAdapter;
 import org.springframework.integration.annotation.Poller;
 import org.springframework.integration.annotation.ServiceActivator;
 import org.springframework.integration.annotation.Transformer;
 import org.springframework.integration.channel.PublishSubscribeChannel;
+import org.springframework.integration.context.IntegrationContextUtils;
 import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.file.FileHeaders;
-import org.springframework.integration.file.filters.AcceptAllFileListFilter;
 import org.springframework.integration.file.remote.gateway.AbstractRemoteFileOutboundGateway.Command;
 import org.springframework.integration.file.remote.session.CachingSessionFactory;
 import org.springframework.integration.file.remote.session.SessionFactory;
-import org.springframework.integration.handler.advice.ExpressionEvaluatingRequestHandlerAdvice;
 import org.springframework.integration.kafka.outbound.KafkaProducerMessageHandler;
 import org.springframework.integration.sftp.filters.SftpSimplePatternFileListFilter;
 import org.springframework.integration.sftp.gateway.SftpOutboundGateway;
 import org.springframework.integration.sftp.inbound.SftpStreamingMessageSource;
-import org.springframework.integration.sftp.outbound.SftpMessageHandler;
 import org.springframework.integration.sftp.session.DefaultSftpSessionFactory;
 import org.springframework.integration.sftp.session.SftpRemoteFileTemplate;
-import org.springframework.integration.transformer.ContentEnricher;
 import org.springframework.integration.transformer.HeaderEnricher;
 import org.springframework.integration.transformer.StreamTransformer;
 import org.springframework.integration.transformer.support.ExpressionEvaluatingHeaderValueMessageProcessor;
 import org.springframework.integration.transformer.support.HeaderValueMessageProcessor;
-import org.springframework.integration.transformer.support.StaticHeaderValueMessageProcessor;
 import org.springframework.integration.xml.transformer.UnmarshallingTransformer;
-import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHandler;
-import org.springframework.messaging.handler.annotation.Header;
-import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.MessageHeaders;
 import org.springframework.oxm.jaxb.Jaxb2Marshaller;
 
 import com.demo.sftp.models.Note;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 @SpringBootApplication
 public class SftpApplication {
@@ -108,6 +97,8 @@ public class SftpApplication {
     messageSource.setRemoteDirectory(remoteDir);
     messageSource.setFilter(new SftpSimplePatternFileListFilter("*.xml"));
     messageSource.setMaxFetchSize(-1);
+    messageSource.setHeaderExpressions(Collections.singletonMap(MessageHeaders.ERROR_CHANNEL,
+        new LiteralExpression(IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME)));
     return messageSource;
   }
 
@@ -124,7 +115,8 @@ public class SftpApplication {
     SftpOutboundGateway sftpOutboundGateway = new SftpOutboundGateway(sftpSessionFactory(), Command.MV.getCommand(),
         "headers['file_remoteDirectory'] + '/' + headers['file_remoteFile']");
     sftpOutboundGateway
-        .setRenameExpressionString("headers['file_remoteDirectory'] + '/processed/' +headers['timestamp'] + '-' + headers['file_remoteFile']");
+        .setRenameExpressionString(
+            "headers['file_remoteDirectory'] + '/processed/' +headers['timestamp'] + '-' + headers['file_remoteFile']");
     sftpOutboundGateway.setRequiresReply(false);
     sftpOutboundGateway.setUseTemporaryFileName(true);
     sftpOutboundGateway.setOutputChannelName("nullChannel");
@@ -135,27 +127,27 @@ public class SftpApplication {
 
   @Bean
   @Order(Ordered.LOWEST_PRECEDENCE)
-  @ServiceActivator(inputChannel = "errorChannel")
-  public MessageHandler moveFileToError() {
+  @ServiceActivator(inputChannel = IntegrationContextUtils.ERROR_CHANNEL_BEAN_NAME)
+  public MessageHandler moveErrorFile() {
     SftpOutboundGateway sftpOutboundGateway = new SftpOutboundGateway(sftpSessionFactory(), Command.MV.getCommand(),
-        "headers['file_remoteDirectory'] + '/' + headers['file_remoteFile']");
+        "payload['failedMessage']['headers']['file_remoteDirectory'] + '/' + payload['failedMessage']['headers']['file_remoteFile']");
     sftpOutboundGateway
-        .setRenameExpressionString("headers['file_remoteDirectory'] + '/error/' +headers['timestamp'] + '-' + headers['file_remoteFile']");
-        sftpOutboundGateway.setLoggingEnabled(true);
+        .setRenameExpressionString(
+            "payload['failedMessage']['headers']['file_remoteDirectory'] + '/error/' + payload['failedMessage']['headers']['timestamp'] + '-' + payload['failedMessage']['headers']['file_remoteFile']");
     sftpOutboundGateway.setRequiresReply(false);
     sftpOutboundGateway.setUseTemporaryFileName(true);
     sftpOutboundGateway.setOutputChannelName("nullChannel");
-    sftpOutboundGateway.setOrder(Ordered.LOWEST_PRECEDENCE);
+    sftpOutboundGateway.setOrder(Ordered.HIGHEST_PRECEDENCE);
     sftpOutboundGateway.setAsync(true);
     return sftpOutboundGateway;
   }
+
 
   @Bean
   @Transformer(inputChannel = "rawdata", outputChannel = "toKafka")
   public UnmarshallingTransformer marshallingTransformer() {
     Jaxb2Marshaller jaxb2Marshaller = new Jaxb2Marshaller();
     jaxb2Marshaller.setClassesToBeBound(Note.class);
-
     return new UnmarshallingTransformer(jaxb2Marshaller);
   }
 
@@ -179,7 +171,6 @@ public class SftpApplication {
     KafkaProducerMessageHandler<String, String> handler = new KafkaProducerMessageHandler<>(kafkaTemplate());
     handler.setTopicExpression(new LiteralExpression("test"));
     handler.setSendSuccessChannelName("success");
-    // handler.setSendFailureChannelName("failure");
     return handler;
   }
 
@@ -196,40 +187,6 @@ public class SftpApplication {
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
     JsonSerializer jsonSerde = new JsonSerializer<>();
     return new DefaultKafkaProducerFactory<>(props, null, jsonSerde.copyWithType(Note.class));
-  }
-
-  // @Bean
-  // @Transformer(inputChannel = "success", outputChannel = "moveFile")
-  // public ContentEnricher contentEnricher() {
-  // Map<String, Object> headersToAdd = new HashMap<>();
-  // Expression processedRenamePath = new
-  // SpelExpressionParser().parseExpression("headers['file_remoteDirectory'] +
-  // '/processed/' + headers['file_remoteFile']");
-  // Expression processedRenamePath = new
-  // SpelExpressionParser().parseExpression("headers['file_remoteDirectory'] +
-  // '/processed/' + headers['file_remoteFile']");
-  // headersToAdd.put(FileHeaders.RENAME_TO, new
-  // ExpressionEvaluatingHeaderValueMessageProcessor<>(processedRenamePath,
-  // String.class));
-  // headersToAdd.put(FileHeaders.RENAME_TO, new
-  // ExpressionEvaluatingHeaderValueMessageProcessor<>(processedRenamePath,
-  // String.class));
-  // return new ContentEnricher(headersToAdd);
-  // }
-
-  @Bean
-  @ServiceActivator(inputChannel = "success")
-  public MessageHandler moveFilehandler() {
-    return System.out::println;
-  }
-
-  @Bean
-  public ExpressionEvaluatingRequestHandlerAdvice after() {
-    ExpressionEvaluatingRequestHandlerAdvice advice = new ExpressionEvaluatingRequestHandlerAdvice();
-    advice.setOnSuccessExpressionString(
-        "@template.copy(headers['file_remoteDirectory']+'/'+headers['file_remoteFile'])");
-    advice.setPropagateEvaluationFailures(true);
-    return advice;
   }
 
 }
