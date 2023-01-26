@@ -64,6 +64,8 @@ public class SftpApplication {
   private String password;
   @Value("${sftp.remote.directory}")
   private String remoteDir;
+  @Value("${spring.kafka.consumer.bootstrap-servers}")
+  private String kafkaBootstrapServer;
 
   public static void main(String[] args) {
     SpringApplication.run(SftpApplication.class, args);
@@ -188,7 +190,7 @@ public class SftpApplication {
   @Bean
   public ProducerFactory<String, String> producerFactory() {
     Map<String, Object> props = new HashMap<>();
-    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaBootstrapServer);
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
     JsonSerializer jsonSerde = new JsonSerializer<>();
